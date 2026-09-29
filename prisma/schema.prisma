@@ -1,0 +1,119 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  MECANICO
+}
+
+enum ReportStatus {
+  BORRADOR
+  COMPLETADO
+}
+
+enum MediaKind {
+  PHOTO
+  VIDEO
+}
+
+model User {
+  id        String   @id @default(cuid())
+  name      String
+  email     String   @unique
+  password  String
+  role      UserRole @default(MECANICO)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  reports Report[]
+
+  @@map("users")
+}
+
+model Report {
+  id     String       @id @default(cuid())
+  status ReportStatus @default(BORRADOR)
+
+  // Identidad del documento: código público y huella SHA-256 del PDF emitido
+  codigo  String? @unique
+  pdfHash String?
+
+  // Datos del vehículo
+  marca       String  @default("")
+  modelo      String  @default("")
+  version     String  @default("")
+  matricula   String  @default("")
+  bastidor    String  @default("")
+  anio        Int?
+  km          Int?
+  combustible String  @default("")
+  cambio      String  @default("")
+  color       String  @default("")
+  precio      Int?
+  observaciones String @default("")
+
+  // Checklist: { [itemId]: { status, note, extras } }
+  items Json @default("{}")
+
+  // Resumen final
+  veredicto        String  @default("") // APTO | CON_RESERVAS | NO_APTO
+  resumen          String  @default("")
+  costeReparacion  Int?
+
+  pdfUrl        String?
+  pdfGeneradoAt DateTime?
+
+  // Envío del informe al cliente por email
+  clienteNombre  String?
+  clienteEmail   String?
+  emailEnviadoAt DateTime?
+
+  createdBy String
+  autor     User   @relation(fields: [createdBy], references: [id])
+
+  media Media[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([createdBy])
+  @@index([status])
+  @@map("reports")
+}
+
+model Media {
+  id       String    @id @default(cuid())
+  reportId String
+  report   Report    @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  itemId   String? // null = fotos generales del vehículo
+  kind     MediaKind
+  url      String
+  thumbUrl String?
+  name     String    @default("")
+  size     Int       @default(0)
+
+  // Trazabilidad del archivo: para demostrar que la foto es de esa revisión
+  // y que no se ha cambiado después.
+  hash           String? // SHA-256 del archivo subido
+  hashVerificado Boolean @default(false) // comprobado por el servidor contra el archivo guardado
+  capturadoAt    DateTime? // fecha de la cámara (EXIF) o del archivo
+  origenFecha    String    @default("") // exif | archivo | desconocido
+  duracionSeg    Int? // vídeos
+  anchoPx        Int?
+  altoPx         Int?
+  camara         String    @default("") // marca y modelo según EXIF
+  subidoPor      String? // usuario que lo subió
+  ip             String?
+  userAgent      String?
+
+  createdAt DateTime @default(now()) // momento de la subida, según el servidor
+
+  @@index([reportId])
+  @@map("media")
+}
