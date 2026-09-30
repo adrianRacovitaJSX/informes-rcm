@@ -30,6 +30,12 @@ const STEPS = CHECKLIST.flatMap((section) =>
   section.items.map((item, i) => ({ item, section, firstOfSection: i === 0 }))
 )
 
+// Campos numéricos: acepta "12.6" o "12,6" (teclado en español) y lo guarda con coma
+function toDecimal(raw: string) {
+  const [int, ...dec] = raw.replace(/\./g, ",").replace(/[^\d,]/g, "").split(",")
+  return dec.length ? `${int},${dec.join("")}` : int
+}
+
 export function ChecklistForm({ initial, user }: { initial: ReportDTO; user?: ShellUser }) {
   const router = useRouter()
   const [r, setR] = useState(initial)
@@ -167,11 +173,10 @@ export function ChecklistForm({ initial, user }: { initial: ReportDTO; user?: Sh
                         </NativeSelect>
                       ) : (
                         <Input
-                          type={e.type === "number" ? "number" : "text"}
+                          type="text"
                           inputMode={e.type === "number" ? "decimal" : undefined}
-                          step={e.type === "number" ? "0.1" : undefined}
                           value={result.extras?.[e.key] ?? ""}
-                          onChange={(ev) => updateItem({ extras: { [e.key]: ev.target.value } })}
+                          onChange={(ev) => updateItem({ extras: { [e.key]: e.type === "number" ? toDecimal(ev.target.value) : ev.target.value } })}
                         />
                       )}
                     </div>
