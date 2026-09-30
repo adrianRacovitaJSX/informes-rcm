@@ -2,6 +2,7 @@ import {
   S3Client,
   PutObjectCommand,
   DeleteObjectCommand,
+  GetObjectCommand,
   CreateMultipartUploadCommand,
   UploadPartCommand,
   CompleteMultipartUploadCommand,
@@ -74,6 +75,21 @@ export async function deleteFile(url: string) {
   } catch (e) {
     console.warn("No se pudo borrar el archivo", url, e)
   }
+}
+
+/** Lee un archivo propio. Los de R2 se piden por la API y no por la URL
+ *  pública: el subdominio r2.dev va limitado y no está pensado para esto. */
+export async function leerArchivo(url: string): Promise<Buffer | null> {
+  if (r2Enabled && url.startsWith(R2_PUBLIC_URL!)) {
+    const key = url.slice(R2_PUBLIC_URL!.replace(/\/$/, "").length + 1)
+    const res = await s3().send(new GetObjectCommand({ Bucket: R2_BUCKET, Key: key }))
+    return res.Body ? Buffer.from(await res.Body.transformToByteArray()) : null
+  }
+  if (url.startsWith("/uploads/")) {
+    const { readFile } = await import("node:fs/promises")
+    return readFile(path.join(process.cwd(), "public", url))
+  }
+  return null
 }
 
 /** Convierte una URL de archivo en algo que react-pdf pueda leer (buffer local o URL absoluta). */

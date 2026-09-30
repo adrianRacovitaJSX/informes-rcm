@@ -6,6 +6,8 @@
 const MAX_IMAGE_SIDE = 1800
 const JPEG_QUALITY = 0.82
 
+const esperar = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
 async function loadBitmap(file: File): Promise<ImageBitmap | HTMLImageElement> {
   try {
     return await createImageBitmap(file)
@@ -46,32 +48,48 @@ export async function compressImage(file: File): Promise<File> {
   }
 }
 
-/** Captura un fotograma del vídeo como miniatura JPEG. */
+/** Pasa un fotograma de un <video> ya cargado a JPEG. */
+export async function fotogramaAJpeg(video: HTMLVideoElement, nombre: string): Promise<File> {
+  const scale = Math.min(1, 800 / Math.max(video.videoWidth, video.videoHeight))
+  const canvas = document.createElement("canvas")
+  canvas.width = Math.round(video.videoWidth * scale)
+  canvas.height = Math.round(video.videoHeight * scale)
+  canvas.getContext("2d")!.drawImage(video, 0, 0, canvas.width, canvas.height)
+  const blob = await canvasToBlob(canvas, 0.75)
+  return new File([blob], nombre, { type: "image/jpeg" })
+}
+
+/**
+ * Captura un fotograma del vídeo como miniatura JPEG. En el iPhone un <video>
+ * fuera de la página a veces no llega a cargar nunca, así que se espera como
+ * mucho unos segundos: sin miniatura el vídeo se sube igual.
+ */
 export async function videoThumbnail(file: File): Promise<File | null> {
+  const url = URL.createObjectURL(file)
+  const video = document.createElement("video")
   try {
-    const url = URL.createObjectURL(file)
-    const video = document.createElement("video")
     video.muted = true
     video.playsInline = true
-    video.preload = "auto"
-    video.src = url
-    await new Promise<void>((resolve, reject) => {
-      video.onloadeddata = () => resolve()
+    video.preload = "metadata"
+    const listo = new Promise<void>((resolve, reject) => {
+      video.onloadedmetadata = () => {
+        // Saltar a un instante obliga al navegador a descodificar ese fotograma
+        video.currentTime = Math.min(0.5, (video.duration || 1) / 2)
+      }
+      video.onseeked = () => resolve()
       video.onerror = () => reject(new Error("No se pudo leer el vídeo"))
     })
-    video.currentTime = Math.min(0.5, (video.duration || 1) / 2)
-    await new Promise<void>((resolve) => { video.onseeked = () => resolve() })
-    const scale = Math.min(1, 800 / Math.max(video.videoWidth, video.videoHeight))
-    const canvas = document.createElement("canvas")
-    canvas.width = Math.round(video.videoWidth * scale)
-    canvas.height = Math.round(video.videoHeight * scale)
-    canvas.getContext("2d")!.drawImage(video, 0, 0, canvas.width, canvas.height)
-    const blob = await canvasToBlob(canvas, 0.75)
-    URL.revokeObjectURL(url)
-    return new File([blob], file.name.replace(/\.[^.]+$/, "") + "-thumb.jpg", { type: "image/jpeg" })
+    video.src = url
+    video.load()
+    await Promise.race([listo, esperar(8000).then(() => { throw new Error("Tiempo agotado") })])
+    if (!video.videoWidth) return null
+    return await fotogramaAJpeg(video, file.name.replace(/\.[^.]+$/, "") + "-thumb.jpg")
   } catch (e) {
     console.warn("Sin miniatura de vídeo", e)
     return null
+  } finally {
+    video.removeAttribute("src")
+    URL.revokeObjectURL(url)
   }
 }
 
@@ -110,12 +128,18 @@ function postWithProgress(url: string, form: FormData, onProgress?: (p: number) 
 // A partir de cierto tamaño (vídeos) el archivo se trocea y se suben varias
 // partes a la vez. En 4G, con una sola conexión se desaprovecha la subida;
 // con tres en paralelo el vídeo llega bastante antes.
+//
+// R2 exige que todas las partes menos la última midan lo mismo y al menos 5 MB.
 
-const TAMANO_PARTE = 8 * 1024 * 1024 // 8 MB
+export const TAMANO_PARTE = 8 * 1024 * 1024 // 8 MB
 const PARTES_A_LA_VEZ = 3
 const MINIMO_POR_PARTES = 6 * 1024 * 1024 // por debajo no compensa
+const INTENTOS_POR_PARTE = 4
+// En 4G la conexión a veces se queda muda sin dar error: si en este tiempo no
+// avanza nada, se corta y se reintenta en lugar de dejar la rueda girando.
+const SIN_AVANCE_MS = 30_000
 
-async function pedir(cuerpo: Record<string, unknown>) {
+export async function pedirPartes(cuerpo: Record<string, unknown>) {
   const res = await fetch("/api/upload/partes", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -125,73 +149,105 @@ async function pedir(cuerpo: Record<string, unknown>) {
   return res.json()
 }
 
-function subirParte(
+/** PUT con progreso que se corta si la conexión deja de avanzar. Si falla,
+ *  devuelve al contador los bytes que había sumado. */
+function putParte(
   url: string,
   trozo: Blob,
-  onAvance: (bytes: number) => void
+  onAvance: (bytes: number) => void,
+  leerEtag: (xhr: XMLHttpRequest) => string | null
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
     xhr.open("PUT", url)
     let ultimo = 0
+    let vigilante = setTimeout(() => xhr.abort(), SIN_AVANCE_MS)
+    const rearmar = () => {
+      clearTimeout(vigilante)
+      vigilante = setTimeout(() => xhr.abort(), SIN_AVANCE_MS)
+    }
+    const fallar = (error: Error) => {
+      clearTimeout(vigilante)
+      onAvance(-ultimo)
+      reject(error)
+    }
     xhr.upload.onprogress = (e) => {
+      rearmar()
       onAvance(e.loaded - ultimo)
       ultimo = e.loaded
     }
     xhr.onload = () => {
-      if (xhr.status < 200 || xhr.status >= 300) return reject(new Error(`R2 respondió ${xhr.status}`))
-      const etag = xhr.getResponseHeader("ETag")
-      // Sin ETag no se puede cerrar la subida: suele faltar ExposeHeaders en el CORS
-      if (!etag) return reject(new Error("R2 no devolvió el ETag de la parte"))
-      resolve(etag)
+      if (xhr.status < 200 || xhr.status >= 300) return fallar(new Error(`La subida respondió ${xhr.status}`))
+      const etag = leerEtag(xhr)
+      if (!etag) return fallar(new Error("No llegó el ETag de la parte"))
+      clearTimeout(vigilante)
+      onAvance(trozo.size - ultimo)
+      resolve(etag.replace(/"/g, ""))
     }
-    xhr.onerror = () => reject(new Error("Error de red subiendo una parte"))
+    xhr.onerror = () => fallar(new Error("Error de red subiendo una parte"))
+    xhr.onabort = () => fallar(new Error("La conexión se quedó parada"))
     xhr.send(trozo)
   })
 }
 
-function subirParteporServidor(
-  key: string,
-  uploadId: string,
+
+/**
+ * Sube una parte con reintentos. Primero directo a R2; si R2 no deja (CORS),
+ * a través del servidor, y a partir de ahí todas las demás también.
+ */
+export async function subirParteConReintentos(
+  subida: { key: string; uploadId: string; directoBloqueado: boolean },
   numero: number,
+  url: string,
   trozo: Blob,
   onAvance: (bytes: number) => void
 ): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest()
-    xhr.open("PUT", `/api/upload/parte?key=${encodeURIComponent(key)}&uploadId=${encodeURIComponent(uploadId)}&numero=${numero}`)
-    let ultimo = 0
-    xhr.upload.onprogress = (e) => { onAvance(e.loaded - ultimo); ultimo = e.loaded }
-    xhr.onload = () => {
+  let ultimoError: unknown
+  for (let intento = 0; intento < INTENTOS_POR_PARTE; intento++) {
+    if (intento > 0) await esperar(1000 * 2 ** (intento - 1))
+    if (!subida.directoBloqueado) {
       try {
-        const json = JSON.parse(xhr.responseText)
-        if (xhr.status >= 200 && xhr.status < 300 && json.etag) resolve(json.etag)
-        else reject(new Error(json.error ?? `Error ${xhr.status}`))
-      } catch {
-        reject(new Error(`Error ${xhr.status}`))
+        // Sin ETag no se puede cerrar la subida: suele faltar ExposeHeaders en el CORS
+        return await putParte(url, trozo, onAvance, (xhr) => xhr.getResponseHeader("ETag"))
+      } catch (e) {
+        ultimoError = e
+        // Un error de red en el primer intento puede ser CORS: se prueba ya por el servidor
+        if (!(e instanceof Error && e.message.startsWith("Error de red"))) continue
       }
     }
-    xhr.onerror = () => reject(new Error("Error de red subiendo una parte"))
-    xhr.send(trozo)
-  })
+    try {
+      const porServidor = `/api/upload/parte?key=${encodeURIComponent(subida.key)}&uploadId=${encodeURIComponent(subida.uploadId)}&numero=${numero}`
+      const etag = await putParte(porServidor, trozo, onAvance, (xhr) => {
+        try { return JSON.parse(xhr.responseText).etag ?? null } catch { return null }
+      })
+      if (!subida.directoBloqueado) {
+        subida.directoBloqueado = true
+        console.warn("R2 no acepta la subida directa, se continúa por el servidor", ultimoError)
+      }
+      return etag
+    } catch (e) {
+      ultimoError = e
+    }
+  }
+  throw ultimoError instanceof Error ? ultimoError : new Error("No se pudo subir una parte")
 }
 
 async function subirPorPartes(file: File, folder: string, onProgress?: (p: number) => void): Promise<string> {
   const total = Math.ceil(file.size / TAMANO_PARTE)
-  const { key, uploadId, urls } = await pedir({
+  const { key, uploadId, urls } = await pedirPartes({
     accion: "iniciar",
     filename: file.name,
     contentType: file.type || "application/octet-stream",
     folder,
     partes: total,
   })
+  const subida = { key, uploadId, directoBloqueado: false }
 
   let subido = 0
-  let directoBloqueado = false
   const etags: { numero: number; etag: string }[] = []
   const avanzar = (bytes: number) => {
     subido += bytes
-    onProgress?.(Math.min(0.99, subido / file.size))
+    onProgress?.(Math.min(0.99, Math.max(0, subido / file.size)))
   }
 
   try {
@@ -201,29 +257,17 @@ async function subirPorPartes(file: File, folder: string, onProgress?: (p: numbe
         const indice = siguiente++
         if (indice >= total) return
         const trozo = file.slice(indice * TAMANO_PARTE, Math.min((indice + 1) * TAMANO_PARTE, file.size))
-        let etag: string
-        try {
-          if (directoBloqueado) throw new Error("subida directa descartada")
-          etag = await subirParte(urls[indice], trozo, avanzar)
-        } catch (e) {
-          // Normalmente es que al bucket le falta el CORS. Se sigue por el
-          // servidor, que al ir por partes tampoco se atraganta.
-          if (!directoBloqueado) {
-            directoBloqueado = true
-            console.warn("R2 no acepta la subida directa, se continúa por el servidor", e)
-          }
-          etag = await subirParteporServidor(key, uploadId, indice + 1, trozo, avanzar)
-        }
-        etags.push({ numero: indice + 1, etag: etag.replace(/"/g, "") })
+        const etag = await subirParteConReintentos(subida, indice + 1, urls[indice], trozo, avanzar)
+        etags.push({ numero: indice + 1, etag })
       }
     })
     await Promise.all(trabajadores)
 
-    const { url } = await pedir({ accion: "completar", key, uploadId, etags })
+    const { url } = await pedirPartes({ accion: "completar", key, uploadId, etags })
     onProgress?.(1)
     return url as string
   } catch (e) {
-    await pedir({ accion: "abortar", key, uploadId }).catch(() => {})
+    await pedirPartes({ accion: "abortar", key, uploadId }).catch(() => {})
     throw e
   }
 }

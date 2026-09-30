@@ -3,12 +3,12 @@ import { createHash } from "node:crypto"
 import { z } from "zod"
 import { auth } from "@/lib/auth"
 import { prisma } from "@/lib/db"
-import { deleteFile } from "@/lib/storage"
+import { deleteFile, leerArchivo } from "@/lib/storage"
 
 type Ctx = { params: Promise<{ id: string }> }
 
 // Por encima de este tamaño no se descarga el archivo para comprobar la huella
-const LIMITE_VERIFICACION = 12 * 1024 * 1024
+const LIMITE_VERIFICACION = 40 * 1024 * 1024
 
 const schema = z.object({
   itemId: z.string().nullable(),
@@ -19,7 +19,7 @@ const schema = z.object({
   size: z.number().int().nonnegative().default(0),
   hash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   capturadoAt: z.string().datetime().nullable().optional(),
-  origenFecha: z.enum(["exif", "archivo", "desconocido"]).optional(),
+  origenFecha: z.enum(["exif", "archivo", "grabacion", "desconocido"]).optional(),
   camara: z.string().max(120).optional(),
   anchoPx: z.number().int().positive().nullable().optional(),
   altoPx: z.number().int().positive().nullable().optional(),
@@ -54,10 +54,9 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   let hashVerificado = false
   if (datos.hash && datos.size > 0 && datos.size <= LIMITE_VERIFICACION) {
     try {
-      const url = datos.url.startsWith("/") ? new URL(datos.url, req.nextUrl.origin).toString() : datos.url
-      const res = await fetch(url, { signal: AbortSignal.timeout(20000), cache: "no-store" })
-      if (res.ok) {
-        const real = createHash("sha256").update(Buffer.from(await res.arrayBuffer())).digest("hex")
+      const contenido = await leerArchivo(datos.url)
+      if (contenido) {
+        const real = createHash("sha256").update(contenido).digest("hex")
         hashVerificado = real === datos.hash
         if (!hashVerificado) console.warn("La huella del archivo no coincide con la enviada", datos.url)
       }

@@ -6,7 +6,9 @@ import { toast } from "sonner"
 import { compressImage, uploadFile, videoThumbnail } from "@/lib/client-upload"
 import { calcularHashArchivo, leerMetadatos } from "@/lib/media-metadata"
 import type { MediaDTO } from "@/lib/report-types"
+import { puedeGrabar } from "@/lib/grabacion-en-vivo"
 import { cn } from "@/lib/utils"
+import { VideoRecorder, type VideoGrabado } from "./video-recorder"
 
 type Uploading = { id: string; name: string; progress: number; kind: "PHOTO" | "VIDEO"; preview?: string }
 
@@ -25,11 +27,27 @@ export function MediaUploader({
 }) {
   const [uploading, setUploading] = useState<Uploading[]>([])
   const [preview, setPreview] = useState<MediaDTO | null>(null)
+  const [grabando, setGrabando] = useState(false)
   // Referencia estable a la lista actual para subidas concurrentes
   const mediaRef = useRef(media)
   useEffect(() => { mediaRef.current = media }, [media])
 
   const folder = `informes/${reportId}/${itemId ?? "general"}`
+
+  function ponerProgreso(tmpId: string, progress: number) {
+    setUploading((u) => u.map((x) => (x.id === tmpId ? { ...x, progress } : x)))
+  }
+
+  async function registrar(datos: Record<string, unknown>) {
+    const res = await fetch(`/api/informes/${reportId}/media`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ itemId, ...datos }),
+    })
+    if (!res.ok) throw new Error("No se pudo registrar el archivo")
+    const { media: created } = await res.json()
+    onChange([...mediaRef.current, created])
+  }
 
   async function handleFiles(files: FileList | null) {
     if (!files || files.length === 0) return
@@ -40,54 +58,66 @@ export function MediaUploader({
       const previewUrl = URL.createObjectURL(original)
       setUploading((u) => [...u, { id: tmpId, name: original.name, progress: 0, kind, preview: isVideo ? undefined : previewUrl }])
       try {
-        // Los datos de procedencia se leen del archivo original: al comprimir
-        // una foto se pierde el EXIF, y con él la fecha de la cámara.
         const file = isVideo ? original : await compressImage(original)
-        // La huella corresponde al archivo que se guarda; el resto de datos
-        // (fecha de la cámara, dispositivo) salen del original sin comprimir.
-        const [metadatos, huella] = await Promise.all([
+        // La subida empieza ya. Huella, datos de procedencia y miniatura se
+        // sacan a la vez; ninguno de ellos puede frenar el envío del vídeo.
+        // Los datos de procedencia se leen del original: al comprimir una foto
+        // se pierde el EXIF, y con él la fecha de la cámara.
+        const [url, thumbUrl, metadatos, huella] = await Promise.all([
+          uploadFile(file, folder, (p) => ponerProgreso(tmpId, p)),
+          isVideo
+            ? videoThumbnail(original).then((t) => (t ? uploadFile(t, folder) : null)).catch(() => null)
+            : Promise.resolve(null),
           leerMetadatos(original, isVideo),
           calcularHashArchivo(file),
         ])
-
-        // El vídeo empieza a subir de inmediato. La miniatura se saca y se sube
-        // a la vez, que en el móvil tarda lo suyo y antes bloqueaba el envío.
-        const subida = uploadFile(file, folder, (p) =>
-          setUploading((u) => u.map((x) => (x.id === tmpId ? { ...x, progress: p } : x)))
-        )
-        const miniatura = isVideo
-          ? videoThumbnail(original).then((t) => (t ? uploadFile(t, folder) : null)).catch(() => null)
-          : Promise.resolve(null)
-
-        const [url, thumbUrl] = await Promise.all([subida, miniatura])
-        const res = await fetch(`/api/informes/${reportId}/media`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            itemId,
-            kind,
-            url,
-            thumbUrl,
-            name: original.name,
-            size: file.size,
-            hash: huella,
-            capturadoAt: metadatos.capturadoAt,
-            origenFecha: metadatos.origenFecha,
-            camara: metadatos.camara,
-            anchoPx: metadatos.anchoPx,
-            altoPx: metadatos.altoPx,
-            duracionSeg: metadatos.duracionSeg,
-          }),
+        await registrar({
+          kind,
+          url,
+          thumbUrl,
+          name: original.name,
+          size: file.size,
+          hash: huella,
+          ...metadatos,
         })
-        if (!res.ok) throw new Error("No se pudo registrar el archivo")
-        const { media: created } = await res.json()
-        onChange([...mediaRef.current, created])
       } catch (e) {
         toast.error(e instanceof Error ? e.message : "Error al subir")
       } finally {
         setUploading((u) => u.filter((x) => x.id !== tmpId))
         URL.revokeObjectURL(previewUrl)
       }
+    }
+  }
+
+  async function handleGrabado({ grabacion, trabajo, miniatura, anchoPx, altoPx }: VideoGrabado) {
+    const tmpId = crypto.randomUUID()
+    const previewUrl = miniatura ? URL.createObjectURL(miniatura) : undefined
+    setUploading((u) => [...u, { id: tmpId, name: "Vídeo", progress: 0, kind: "VIDEO", preview: previewUrl }])
+    grabacion.onProgreso = (p) => ponerProgreso(tmpId, p)
+    try {
+      const [resultado, thumbUrl] = await Promise.all([
+        trabajo,
+        miniatura ? uploadFile(miniatura, folder).catch(() => null) : Promise.resolve(null),
+      ])
+      await registrar({
+        kind: "VIDEO",
+        url: resultado.url,
+        thumbUrl,
+        name: resultado.archivo.name,
+        size: resultado.archivo.size,
+        hash: resultado.hash,
+        capturadoAt: resultado.capturadoAt,
+        origenFecha: "grabacion",
+        camara: "",
+        anchoPx,
+        altoPx,
+        duracionSeg: resultado.duracionSeg,
+      })
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "No se pudo subir el vídeo")
+    } finally {
+      setUploading((u) => u.filter((x) => x.id !== tmpId))
+      if (previewUrl) URL.revokeObjectURL(previewUrl)
     }
   }
 
@@ -151,9 +181,32 @@ export function MediaUploader({
 
       <div className="flex flex-wrap gap-2">
         <MediaBtn icon={Camera} label="Foto" accept="image/*" capture="environment" onFiles={handleFiles} />
-        <MediaBtn icon={Video} label="Vídeo" accept="video/*" capture="environment" onFiles={handleFiles} />
+        <MediaBtn
+          icon={Video}
+          label="Vídeo"
+          accept="video/*"
+          capture="environment"
+          onFiles={handleFiles}
+          onPulsar={(e) => {
+            // Si el navegador deja grabar, se graba dentro de la app (mejor
+            // calidad y se sube mientras se graba); si no, la cámara del sistema
+            if (puedeGrabar()) {
+              e.preventDefault()
+              setGrabando(true)
+            }
+          }}
+        />
         <MediaBtn icon={ImageIcon} label="Galería" accept="image/*,video/*" multiple onFiles={handleFiles} />
       </div>
+
+      {grabando ? (
+        <VideoRecorder
+          folder={folder}
+          onGrabado={handleGrabado}
+          onCerrar={() => setGrabando(false)}
+          onUsarCamaraDelSistema={handleFiles}
+        />
+      ) : null}
 
       {preview ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-3 pt-[max(0.75rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))]" onClick={() => setPreview(null)}>
@@ -173,7 +226,7 @@ export function MediaUploader({
 // Un <label> que envuelve el <input type="file"> abre la cámara/galería de forma nativa en iOS y Android
 // (más fiable que disparar input.click() sobre un input con display:none).
 function MediaBtn({
-  icon: Icon, label, accept, capture, multiple, onFiles,
+  icon: Icon, label, accept, capture, multiple, onFiles, onPulsar,
 }: {
   icon: React.ElementType
   label: string
@@ -181,9 +234,10 @@ function MediaBtn({
   capture?: "environment" | "user"
   multiple?: boolean
   onFiles: (files: FileList | null) => void
+  onPulsar?: (e: React.MouseEvent<HTMLLabelElement>) => void
 }) {
   return (
-    <label className="relative inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-lg border border-border bg-background/50 px-3 text-xs font-semibold text-foreground/80 transition-colors hover:border-primary/40 hover:text-primary active:scale-[0.98] has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring/60">
+    <label onClick={onPulsar} className="relative inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-lg border border-border bg-background/50 px-3 text-xs font-semibold text-foreground/80 transition-colors hover:border-primary/40 hover:text-primary active:scale-[0.98] has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring/60">
       <Icon className="size-3.5" />
       {label}
       <input

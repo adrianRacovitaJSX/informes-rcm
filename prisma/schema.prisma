@@ -103,7 +103,7 @@ model Media {
   hash           String? // SHA-256 del archivo subido
   hashVerificado Boolean @default(false) // comprobado por el servidor contra el archivo guardado
   capturadoAt    DateTime? // fecha de la cámara (EXIF) o del archivo
-  origenFecha    String    @default("") // exif | archivo | desconocido
+  origenFecha    String    @default("") // exif | archivo | grabacion | desconocido
   duracionSeg    Int? // vídeos
   anchoPx        Int?
   altoPx         Int?
