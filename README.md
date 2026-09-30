@@ -15,6 +15,12 @@ Un informe ya generado se puede seguir editando: desde su ficha se entra a cualq
 - PDF generado en servidor con `@react-pdf/renderer` (fotos incrustadas, vídeos como QR + enlace).
 - Vídeo grabado dentro de la app (cámara del navegador + `MediaRecorder`) a 1080p y 8 Mbps. Se sube a R2 por partes de 5 MB **mientras se graba**, así que al parar solo queda el último trozo. Con el `<input capture>` del iPhone el vídeo salía en calidad media y iOS lo recomprimía antes de entregarlo, que era lo que más tardaba. Si el navegador no deja grabar, se usa la cámara del sistema.
 - Subida directa a R2. Los archivos de más de 6 MB (vídeos de galería) se trocean en partes de 8 MB y se suben tres a la vez. Cada parte se reintenta hasta cuatro veces y se corta si la conexión se queda 30 s sin avanzar.
+- Subida a prueba de fallos:
+  - Ninguna espera es infinita. Todas las peticiones tienen límite de tiempo y reintentos, y si la grabadora del iPhone no avisa al parar se sigue con lo grabado.
+  - Si la grabadora arranca sin grabar nada, se reinicia sola a los 5 s.
+  - Cada vídeo se guarda en el móvil (IndexedDB) en cuanto se termina de grabar, y no se borra de ahí hasta que queda registrado en el informe.
+  - Si falla la subida, la miniatura se queda en rojo con «Reintentar». Se reintenta también sola al volver la cobertura y cada 30 s, y al volver a abrir el punto si se cerró la app.
+  - Registrar un archivo y cerrar una subida por partes son idempotentes, así que un reintento no duplica nada.
 - Instalable como PWA: manifiesto, iconos, service worker, pantalla sin conexión y aviso de instalación.
 
 ## Puesta en marcha
