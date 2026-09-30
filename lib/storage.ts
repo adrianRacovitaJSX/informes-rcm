@@ -3,6 +3,7 @@ import {
   PutObjectCommand,
   DeleteObjectCommand,
   GetObjectCommand,
+  HeadObjectCommand,
   CreateMultipartUploadCommand,
   UploadPartCommand,
   CompleteMultipartUploadCommand,
@@ -82,7 +83,7 @@ export async function deleteFile(url: string) {
 export async function leerArchivo(url: string): Promise<Buffer | null> {
   if (r2Enabled && url.startsWith(R2_PUBLIC_URL!)) {
     const key = url.slice(R2_PUBLIC_URL!.replace(/\/$/, "").length + 1)
-    const res = await s3().send(new GetObjectCommand({ Bucket: R2_BUCKET, Key: key }))
+    const res = await s3().send(new GetObjectCommand({ Bucket: R2_BUCKET, Key: key }), { abortSignal: AbortSignal.timeout(20_000) })
     return res.Body ? Buffer.from(await res.Body.transformToByteArray()) : null
   }
   if (url.startsWith("/uploads/")) {
@@ -124,14 +125,23 @@ export async function completarSubidaPorPartes(
   uploadId: string,
   partes: { PartNumber: number; ETag: string }[]
 ) {
-  await s3().send(
-    new CompleteMultipartUploadCommand({
-      Bucket: R2_BUCKET,
-      Key: key,
-      UploadId: uploadId,
-      MultipartUpload: { Parts: partes.sort((a, b) => a.PartNumber - b.PartNumber) },
-    })
-  )
+  try {
+    await s3().send(
+      new CompleteMultipartUploadCommand({
+        Bucket: R2_BUCKET,
+        Key: key,
+        UploadId: uploadId,
+        MultipartUpload: { Parts: partes.sort((a, b) => a.PartNumber - b.PartNumber) },
+      })
+    )
+  } catch (e) {
+    // Un reintento del móvil tras una respuesta perdida: la subida ya se cerró
+    // y el archivo existe. Cualquier otro caso es un error de verdad.
+    const existe = await s3()
+      .send(new HeadObjectCommand({ Bucket: R2_BUCKET, Key: key }))
+      .then(() => true, () => false)
+    if (!existe) throw e
+  }
   return publicUrl(key)
 }
 

@@ -3,11 +3,15 @@
 import { useEffect, useRef, useState } from "react"
 import { X, Loader2 } from "lucide-react"
 import { fotogramaAJpeg } from "@/lib/client-upload"
-import { abrirCamara, DURACION_MAXIMA_SEG, GrabacionEnVivo, type ResultadoGrabacion } from "@/lib/grabacion-en-vivo"
+import { abrirCamara, DURACION_MAXIMA_SEG, GrabacionEnVivo, type VideoCerrado } from "@/lib/grabacion-en-vivo"
+
+// Si la grabadora no entrega nada en este tiempo, está atascada
+const SIN_DATOS_SEG = 5
 
 export type VideoGrabado = {
   grabacion: GrabacionEnVivo
-  trabajo: Promise<ResultadoGrabacion>
+  /** Se resuelve en unos segundos con el vídeo ya cerrado en memoria. */
+  cierre: Promise<VideoCerrado>
   miniatura: File | null
   anchoPx: number | null
   altoPx: number | null
@@ -36,6 +40,8 @@ export function VideoRecorder({
   const [error, setError] = useState("")
   const [segundos, setSegundos] = useState(0)
   const [calidad, setCalidad] = useState("")
+  const [aviso, setAviso] = useState("")
+  const reiniciadaRef = useRef(false)
   // Para saber en la limpieza si se estaba grabando o terminando una grabación
   const estadoRef = useRef(estado)
   useEffect(() => { estadoRef.current = estado }, [estado])
@@ -75,19 +81,35 @@ export function VideoRecorder({
   useEffect(() => {
     if (estado !== "grabando") return
     const t = setInterval(() => {
-      const s = grabacionRef.current?.segundos ?? 0
+      const g = grabacionRef.current
+      const s = g?.segundos ?? 0
       setSegundos(s)
-      if (s >= DURACION_MAXIMA_SEG) parar()
+      if (s >= DURACION_MAXIMA_SEG) return parar()
+      // La grabadora del iPhone a veces arranca sin grabar nada. Mejor
+      // descubrirlo ahora que al parar, cuando el vídeo ya no se puede repetir.
+      if (g && s > SIN_DATOS_SEG && g.bytesGrabados === 0) {
+        g.descartar()
+        grabacionRef.current = null
+        if (reiniciadaRef.current) {
+          setError("La cámara no está grabando. Usa la cámara del sistema.")
+          setEstado("error")
+          return
+        }
+        reiniciadaRef.current = true
+        setAviso("La cámara no respondía. Se ha vuelto a empezar la grabación.")
+        empezar({ sencilla: true })
+      }
     }, 250)
     return () => clearInterval(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [estado])
 
-  function empezar() {
+  function empezar({ sencilla = false }: { sencilla?: boolean } = {}) {
     const stream = streamRef.current
     if (!stream) return
+    if (!sencilla) setAviso("")
     try {
-      const grabacion = new GrabacionEnVivo(stream, folder)
+      const grabacion = new GrabacionEnVivo(stream, folder, { sencilla })
       grabacion.empezar()
       grabacionRef.current = grabacion
       miniaturaRef.current = null
@@ -111,17 +133,17 @@ export function VideoRecorder({
     estadoRef.current = "lista"
     terminandoRef.current = true
     const v = videoRef.current
-    const trabajo = grabacion.terminar()
+    const cierre = grabacion.cerrar()
     onGrabado({
       grabacion,
-      trabajo,
+      cierre,
       miniatura: miniaturaRef.current,
       anchoPx: v?.videoWidth || null,
       altoPx: v?.videoHeight || null,
     })
     grabacionRef.current = null
     // La cámara se suelta cuando MediaRecorder ha entregado el último trozo
-    trabajo.catch(() => {}).finally(() => streamRef.current?.getTracks().forEach((t) => t.stop()))
+    cierre.catch(() => {}).finally(() => streamRef.current?.getTracks().forEach((t) => t.stop()))
     onCerrar()
   }
 
@@ -151,6 +173,10 @@ export function VideoRecorder({
         <span className="min-w-9 text-right text-xs font-semibold text-white/70">{calidad}</span>
       </div>
 
+      {aviso && estado === "grabando" ? (
+        <p className="relative mx-4 mt-3 rounded-lg bg-amber-500/90 px-3 py-2 text-center text-xs font-semibold text-black">{aviso}</p>
+      ) : null}
+
       {estado === "abriendo" ? (
         <div className="relative flex flex-1 items-center justify-center"><Loader2 className="size-7 animate-spin" /></div>
       ) : null}
@@ -177,7 +203,7 @@ export function VideoRecorder({
         <div className="relative flex justify-center pb-[max(2rem,calc(env(safe-area-inset-bottom)+1rem))]">
           <button
             type="button"
-            onClick={estado === "grabando" ? parar : empezar}
+            onClick={estado === "grabando" ? parar : () => empezar()}
             className="flex size-20 items-center justify-center rounded-full border-4 border-white active:scale-95"
             aria-label={estado === "grabando" ? "Parar" : "Grabar"}
           >

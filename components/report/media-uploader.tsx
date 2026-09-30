@@ -1,16 +1,144 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
-import { Camera, Image as ImageIcon, Video, X, Loader2, Play } from "lucide-react"
+import { useEffect, useRef, useState, useSyncExternalStore } from "react"
+import { Camera, Image as ImageIcon, Video, X, Loader2, Play, RotateCcw, AlertTriangle } from "lucide-react"
 import { toast } from "sonner"
-import { compressImage, uploadFile, videoThumbnail } from "@/lib/client-upload"
+import { compressImage, conTiempo, pedirJson, uploadFile, videoThumbnail } from "@/lib/client-upload"
 import { calcularHashArchivo, leerMetadatos } from "@/lib/media-metadata"
 import type { MediaDTO } from "@/lib/report-types"
 import { puedeGrabar } from "@/lib/grabacion-en-vivo"
+import {
+  actualizarPendiente,
+  borrarPendiente,
+  guardarPendiente,
+  listarPendientes,
+  type SubidaPendiente,
+} from "@/lib/subidas-pendientes"
 import { cn } from "@/lib/utils"
 import { VideoRecorder, type VideoGrabado } from "./video-recorder"
 
-type Uploading = { id: string; name: string; progress: number; kind: "PHOTO" | "VIDEO"; preview?: string }
+// ── Subidas en curso ─────────────────────────────────────────────────────────
+// Viven fuera del componente: si el mecánico pasa al siguiente punto mientras
+// un vídeo sube, la subida sigue y al volver se ve en qué punto está. Una
+// subida nunca desaparece sin más: o termina registrada, o se queda con el
+// aviso de error y el botón de reintentar.
+
+type Trabajo = {
+  id: string
+  destino: string
+  kind: "PHOTO" | "VIDEO"
+  progress: number
+  preview?: string
+  error?: string
+  /** Solo los vídeos guardados en el móvil se pueden reintentar. */
+  pendiente?: SubidaPendiente
+}
+
+const trabajos = new Map<string, Trabajo>()
+let instantanea: Trabajo[] = []
+const oyentes = new Set<() => void>()
+const SIN_TRABAJOS: Trabajo[] = []
+
+function publicar() {
+  instantanea = [...trabajos.values()]
+  oyentes.forEach((f) => f())
+}
+function suscribir(f: () => void) {
+  oyentes.add(f)
+  return () => { oyentes.delete(f) }
+}
+function ponerTrabajo(t: Trabajo) {
+  trabajos.set(t.id, t)
+  publicar()
+}
+function cambiarTrabajo(id: string, cambios: Partial<Trabajo>) {
+  const t = trabajos.get(id)
+  if (!t) return
+  trabajos.set(id, { ...t, ...cambios })
+  publicar()
+}
+function quitarTrabajo(id: string) {
+  const t = trabajos.get(id)
+  if (t?.preview) URL.revokeObjectURL(t.preview)
+  trabajos.delete(id)
+  publicar()
+}
+
+// Dónde apuntar cada archivo registrado: la última lista y el onChange del
+// punto, aunque en ese momento se esté viendo otro.
+const destinos = new Map<string, { lista: MediaDTO[]; onChange: (next: MediaDTO[]) => void }>()
+
+function anadirAlDestino(destino: string, creado: MediaDTO) {
+  const d = destinos.get(destino)
+  if (!d) return
+  d.lista = [...d.lista.filter((m) => m.id !== creado.id), creado]
+  d.onChange(d.lista)
+}
+
+async function registrar(reportId: string, itemId: string | null, datos: Record<string, unknown>): Promise<MediaDTO> {
+  // El servidor lo trata como idempotente por URL: si una respuesta se pierde
+  // y se reintenta, no se duplica el archivo
+  const { media } = await pedirJson<{ media: MediaDTO }>(
+    `/api/informes/${reportId}/media`,
+    { method: "POST", json: { itemId, ...datos } },
+    { tiempoMs: 45_000 }
+  )
+  return media
+}
+
+/**
+ * Sube (si hace falta) y registra un vídeo guardado en el móvil. `urlEnCurso`
+ * es la subida que ya está en marcha, para no empezarla de nuevo.
+ */
+async function subirVideo(p: SubidaPendiente, urlEnCurso?: Promise<string>) {
+  // Nunca dos subidas a la vez del mismo vídeo (botón y reintento automático)
+  if (enMarcha.has(p.id)) return
+  enMarcha.add(p.id)
+  const destino = `${p.reportId}:${p.itemId ?? ""}`
+  cambiarTrabajo(p.id, { error: undefined, progress: p.url ? 1 : 0 })
+  try {
+    let url = p.url
+    if (!url) {
+      const archivo = new File([p.archivo], p.nombre, { type: p.tipo })
+      url = await (urlEnCurso ?? uploadFile(archivo, p.folder, (x) => cambiarTrabajo(p.id, { progress: x })))
+      p = { ...p, url }
+      cambiarTrabajo(p.id, { pendiente: p, progress: 1 })
+      await actualizarPendiente(p.id, { url })
+    }
+    let thumbUrl = p.thumbUrl
+    if (!thumbUrl && p.miniatura) {
+      // La miniatura es un extra: si no sube a tiempo, el vídeo se registra sin ella
+      const mini = new File([p.miniatura], "video-thumb.jpg", { type: "image/jpeg" })
+      thumbUrl = await conTiempo(uploadFile(mini, p.folder), 30_000, "Miniatura lenta").catch(() => null)
+    }
+    const creado = await registrar(p.reportId, p.itemId, { ...p.datos, url, thumbUrl })
+    await borrarPendiente(p.id)
+    quitarTrabajo(p.id)
+    anadirAlDestino(destino, creado)
+  } catch (e) {
+    console.error("Subida de vídeo fallida", e)
+    cambiarTrabajo(p.id, {
+      pendiente: p,
+      error: e instanceof Error ? e.message : "No se pudo subir el vídeo",
+    })
+  } finally {
+    enMarcha.delete(p.id)
+  }
+}
+
+const enMarcha = new Set<string>()
+
+// Los vídeos que se quedaron sin subir se reintentan solos al volver la
+// cobertura y cada cierto tiempo, sin esperar a que nadie pulse el botón
+function reintentarFallidos() {
+  for (const t of trabajos.values()) if (t.error && t.pendiente) subirVideo(t.pendiente)
+}
+if (typeof window !== "undefined") {
+  window.addEventListener("online", reintentarFallidos)
+  setInterval(reintentarFallidos, 30_000)
+}
+
+const reanudados = new Set<string>()
 
 export function MediaUploader({
   reportId,
@@ -25,100 +153,140 @@ export function MediaUploader({
   onChange: (next: MediaDTO[]) => void
   compact?: boolean
 }) {
-  const [uploading, setUploading] = useState<Uploading[]>([])
   const [preview, setPreview] = useState<MediaDTO | null>(null)
   const [grabando, setGrabando] = useState(false)
+  const destino = `${reportId}:${itemId ?? ""}`
+  const todos = useSyncExternalStore(suscribir, () => instantanea, () => SIN_TRABAJOS)
+  const uploading = todos.filter((t) => t.destino === destino)
   // Referencia estable a la lista actual para subidas concurrentes
   const mediaRef = useRef(media)
-  useEffect(() => { mediaRef.current = media }, [media])
+  useEffect(() => {
+    mediaRef.current = media
+    destinos.set(destino, { lista: media, onChange })
+  }, [media, onChange, destino])
 
   const folder = `informes/${reportId}/${itemId ?? "general"}`
 
-  function ponerProgreso(tmpId: string, progress: number) {
-    setUploading((u) => u.map((x) => (x.id === tmpId ? { ...x, progress } : x)))
+  // Vídeos que se quedaron sin registrar (app cerrada, sin cobertura…): se
+  // vuelven a intentar solos al abrir el punto
+  useEffect(() => {
+    listarPendientes(reportId, itemId).then((lista) => {
+      for (const p of lista) {
+        if (trabajos.has(p.id) || reanudados.has(p.id)) continue
+        reanudados.add(p.id)
+        ponerTrabajo({
+          id: p.id,
+          destino,
+          kind: "VIDEO",
+          progress: 0,
+          preview: p.miniatura ? URL.createObjectURL(p.miniatura) : undefined,
+          pendiente: p,
+        })
+        subirVideo(p)
+      }
+    })
+  }, [reportId, itemId, destino])
+
+  async function subirFoto(original: File) {
+    const id = crypto.randomUUID()
+    ponerTrabajo({ id, destino, kind: "PHOTO", progress: 0, preview: URL.createObjectURL(original) })
+    try {
+      const file = await compressImage(original)
+      // Los datos de procedencia se leen del original: al comprimir una foto
+      // se pierde el EXIF, y con él la fecha de la cámara
+      const [url, metadatos, huella] = await Promise.all([
+        uploadFile(file, folder, (p) => cambiarTrabajo(id, { progress: p })),
+        leerMetadatos(original, false),
+        calcularHashArchivo(file),
+      ])
+      const creado = await registrar(reportId, itemId, {
+        kind: "PHOTO", url, thumbUrl: null, name: original.name, size: file.size, hash: huella, ...metadatos,
+      })
+      quitarTrabajo(id)
+      anadirAlDestino(destino, creado)
+    } catch (e) {
+      quitarTrabajo(id)
+      toast.error(`${original.name}: ${e instanceof Error ? e.message : "no se pudo subir"}`)
+    }
   }
 
-  async function registrar(datos: Record<string, unknown>) {
-    const res = await fetch(`/api/informes/${reportId}/media`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ itemId, ...datos }),
-    })
-    if (!res.ok) throw new Error("No se pudo registrar el archivo")
-    const { media: created } = await res.json()
-    onChange([...mediaRef.current, created])
+  /** Vídeo de la galería o de la cámara del sistema. */
+  async function subirVideoDeArchivo(original: File) {
+    const id = crypto.randomUUID()
+    ponerTrabajo({ id, destino, kind: "VIDEO", progress: 0 })
+    // La subida empieza ya; huella, datos y miniatura se sacan mientras tanto
+    const enCurso = uploadFile(original, folder, (p) => cambiarTrabajo(id, { progress: p }))
+    enCurso.catch(() => {})
+    const [metadatos, huella, miniatura] = await Promise.all([
+      leerMetadatos(original, true),
+      calcularHashArchivo(original).catch(() => undefined),
+      videoThumbnail(original),
+    ])
+    if (miniatura) cambiarTrabajo(id, { preview: URL.createObjectURL(miniatura) })
+    const p: SubidaPendiente = {
+      id, reportId, itemId, folder,
+      archivo: original, nombre: original.name, tipo: original.type || "video/mp4",
+      miniatura, url: null, thumbUrl: null,
+      datos: { kind: "VIDEO", name: original.name, size: original.size, hash: huella, ...metadatos },
+      creado: Date.now(),
+    }
+    cambiarTrabajo(id, { pendiente: p })
+    await guardarPendiente(p)
+    await subirVideo(p, enCurso)
   }
 
   async function handleFiles(files: FileList | null) {
     if (!files || files.length === 0) return
     for (const original of Array.from(files)) {
-      const isVideo = original.type.startsWith("video/")
-      const kind = isVideo ? "VIDEO" : "PHOTO"
-      const tmpId = crypto.randomUUID()
-      const previewUrl = URL.createObjectURL(original)
-      setUploading((u) => [...u, { id: tmpId, name: original.name, progress: 0, kind, preview: isVideo ? undefined : previewUrl }])
-      try {
-        const file = isVideo ? original : await compressImage(original)
-        // La subida empieza ya. Huella, datos de procedencia y miniatura se
-        // sacan a la vez; ninguno de ellos puede frenar el envío del vídeo.
-        // Los datos de procedencia se leen del original: al comprimir una foto
-        // se pierde el EXIF, y con él la fecha de la cámara.
-        const [url, thumbUrl, metadatos, huella] = await Promise.all([
-          uploadFile(file, folder, (p) => ponerProgreso(tmpId, p)),
-          isVideo
-            ? videoThumbnail(original).then((t) => (t ? uploadFile(t, folder) : null)).catch(() => null)
-            : Promise.resolve(null),
-          leerMetadatos(original, isVideo),
-          calcularHashArchivo(file),
-        ])
-        await registrar({
-          kind,
-          url,
-          thumbUrl,
-          name: original.name,
-          size: file.size,
-          hash: huella,
-          ...metadatos,
-        })
-      } catch (e) {
-        toast.error(e instanceof Error ? e.message : "Error al subir")
-      } finally {
-        setUploading((u) => u.filter((x) => x.id !== tmpId))
-        URL.revokeObjectURL(previewUrl)
-      }
+      if (original.type.startsWith("video/")) await subirVideoDeArchivo(original).catch(() => {})
+      else await subirFoto(original)
     }
   }
 
-  async function handleGrabado({ grabacion, trabajo, miniatura, anchoPx, altoPx }: VideoGrabado) {
-    const tmpId = crypto.randomUUID()
-    const previewUrl = miniatura ? URL.createObjectURL(miniatura) : undefined
-    setUploading((u) => [...u, { id: tmpId, name: "Vídeo", progress: 0, kind: "VIDEO", preview: previewUrl }])
-    grabacion.onProgreso = (p) => ponerProgreso(tmpId, p)
+  async function handleGrabado({ grabacion, cierre, miniatura, anchoPx, altoPx }: VideoGrabado) {
+    const id = crypto.randomUUID()
+    ponerTrabajo({ id, destino, kind: "VIDEO", progress: 0, preview: miniatura ? URL.createObjectURL(miniatura) : undefined })
+    grabacion.onProgreso = (p) => cambiarTrabajo(id, { progress: p })
+    let cerrado
     try {
-      const [resultado, thumbUrl] = await Promise.all([
-        trabajo,
-        miniatura ? uploadFile(miniatura, folder).catch(() => null) : Promise.resolve(null),
-      ])
-      await registrar({
+      cerrado = await cierre
+    } catch (e) {
+      quitarTrabajo(id)
+      toast.error(e instanceof Error ? e.message : "No se pudo guardar la grabación")
+      return
+    }
+    const p: SubidaPendiente = {
+      id, reportId, itemId, folder,
+      archivo: cerrado.archivo, nombre: cerrado.archivo.name, tipo: cerrado.archivo.type,
+      miniatura, url: null, thumbUrl: null,
+      datos: {
         kind: "VIDEO",
-        url: resultado.url,
-        thumbUrl,
-        name: resultado.archivo.name,
-        size: resultado.archivo.size,
-        hash: resultado.hash,
-        capturadoAt: resultado.capturadoAt,
+        name: cerrado.archivo.name,
+        size: cerrado.archivo.size,
+        hash: cerrado.hash,
+        capturadoAt: cerrado.capturadoAt,
         origenFecha: "grabacion",
         camara: "",
         anchoPx,
         altoPx,
-        duracionSeg: resultado.duracionSeg,
-      })
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "No se pudo subir el vídeo")
-    } finally {
-      setUploading((u) => u.filter((x) => x.id !== tmpId))
-      if (previewUrl) URL.revokeObjectURL(previewUrl)
+        duracionSeg: cerrado.duracionSeg,
+      },
+      creado: Date.now(),
     }
+    cambiarTrabajo(id, { pendiente: p })
+    // Guardado en el móvil antes de nada: pase lo que pase con la red, el vídeo no se pierde
+    await guardarPendiente(p)
+    await subirVideo(p, cerrado.url)
+  }
+
+  function reintentar(t: Trabajo) {
+    if (t.pendiente) subirVideo(t.pendiente)
+  }
+
+  async function descartarTrabajo(t: Trabajo) {
+    if (!confirm("¿Descartar este vídeo? No se ha llegado a guardar en el informe.")) return
+    quitarTrabajo(t.id)
+    await borrarPendiente(t.id)
   }
 
   async function remove(m: MediaDTO) {
@@ -161,19 +329,42 @@ export function MediaUploader({
             </div>
           ))}
           {uploading.map((u) => (
-            <div key={u.id} className="relative aspect-square overflow-hidden rounded-xl border border-border bg-muted">
+            <div key={u.id} className={cn("relative aspect-square overflow-hidden rounded-xl border bg-muted", u.error ? "border-red-500/70" : "border-border")}>
               {u.preview ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img src={u.preview} alt="" className="h-full w-full object-cover opacity-50" />
               ) : (
                 <div className="flex h-full items-center justify-center text-muted-foreground"><Video className="size-6" /></div>
               )}
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-black/40">
-                <Loader2 className="size-5 animate-spin text-white" />
-                <div className="h-1 w-3/4 overflow-hidden rounded-full bg-white/30">
-                  <div className="h-full bg-primary transition-all" style={{ width: `${Math.round(u.progress * 100)}%` }} />
+              {u.error ? (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-black/60 p-1.5 text-center">
+                  <AlertTriangle className="size-4 text-red-400" />
+                  <span className="line-clamp-2 text-[10px] leading-tight text-white/90">Sin subir. Está guardado en el móvil.</span>
+                  <button
+                    type="button"
+                    onClick={() => reintentar(u)}
+                    className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-[11px] font-semibold text-black"
+                  >
+                    <RotateCcw className="size-3" />
+                    Reintentar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => descartarTrabajo(u)}
+                    className="absolute right-1 top-1 rounded-full bg-black/70 p-1 text-white/90 hover:bg-red-600"
+                    aria-label="Descartar"
+                  >
+                    <X className="size-3.5" />
+                  </button>
                 </div>
-              </div>
+              ) : (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-black/40">
+                  <Loader2 className="size-5 animate-spin text-white" />
+                  <div className="h-1 w-3/4 overflow-hidden rounded-full bg-white/30">
+                    <div className="h-full bg-primary transition-all" style={{ width: `${Math.round(u.progress * 100)}%` }} />
+                  </div>
+                </div>
+              )}
             </div>
           ))}
         </div>

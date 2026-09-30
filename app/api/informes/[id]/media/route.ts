@@ -50,6 +50,19 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   const report = await prisma.report.findUnique({ where: { id }, select: { id: true } })
   if (!report) return NextResponse.json({ error: "No encontrado" }, { status: 404 })
 
+  // Si el móvil reintenta porque no le llegó la respuesta, el archivo ya está
+  // registrado: se devuelve el mismo en lugar de duplicarlo
+  const existente = await prisma.media.findFirst({ where: { reportId: id, url: datos.url } })
+  if (existente) {
+    return NextResponse.json({
+      media: {
+        ...existente,
+        capturadoAt: existente.capturadoAt?.toISOString() ?? null,
+        createdAt: existente.createdAt.toISOString(),
+      },
+    })
+  }
+
   // Para los archivos pequeños el servidor comprueba él mismo la huella
   let hashVerificado = false
   if (datos.hash && datos.size > 0 && datos.size <= LIMITE_VERIFICACION) {

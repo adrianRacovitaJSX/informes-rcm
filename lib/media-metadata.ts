@@ -2,6 +2,7 @@
 
 import { sha256 } from "@noble/hashes/sha2"
 import { bytesToHex } from "@noble/hashes/utils"
+import { conTiempo } from "@/lib/client-upload"
 
 export type MetadatosArchivo = {
   capturadoAt: string | null
@@ -77,10 +78,15 @@ export async function leerMetadatos(file: File, esVideo: boolean): Promise<Metad
     try {
       // Se carga aquí y no arriba: al importarse en el servidor (render de la
       // página) intenta cargar fs y zlib, falla y llena los logs de avisos
-      const { default: exifr } = await import("exifr")
-      const exif = await exifr.parse(file, {
-        pick: ["DateTimeOriginal", "CreateDate", "Make", "Model", "ExifImageWidth", "ExifImageHeight"],
-      })
+      const exif = await conTiempo(
+        import("exifr").then(({ default: exifr }) =>
+          exifr.parse(file, {
+            pick: ["DateTimeOriginal", "CreateDate", "Make", "Model", "ExifImageWidth", "ExifImageHeight"],
+          })
+        ),
+        10_000,
+        "EXIF lento"
+      )
       const fecha: Date | undefined = exif?.DateTimeOriginal ?? exif?.CreateDate
       if (fecha instanceof Date && !Number.isNaN(fecha.getTime())) {
         capturadoAt = fecha.toISOString()
