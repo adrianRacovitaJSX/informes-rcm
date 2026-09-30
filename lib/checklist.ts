@@ -74,7 +74,11 @@ export const CHECKLIST: ChecklistSection[] = [
         hint: "Conectar la máquina y revisar errores almacenados.",
         extras: [{ key: "errores", label: "Códigos de error", type: "text" }],
       },
-      { id: "liquido_frenos", label: "Líquido de frenos y frenos", hint: "Nivel, color del líquido y respuesta del pedal." },
+      {
+        id: "liquido_frenos",
+        label: "Líquido de frenos, frenos y discos",
+        hint: "Nivel y color del líquido, respuesta del pedal y estado de los discos de freno: desgaste, surcos y labio en el borde.",
+      },
       {
         id: "alternador",
         label: "Alternador",
@@ -85,6 +89,11 @@ export const CHECKLIST: ChecklistSection[] = [
         ],
       },
       { id: "radiadores", label: "Radiadores", hint: "Que no viertan ni estén chapuceados." },
+      {
+        id: "silentblocks",
+        label: "Silentblocks de motor y caja de cambios",
+        hint: "Sin gomas agrietadas ni despegadas. Al acelerar y soltar en parado, el motor no debe dar golpes ni moverse en exceso.",
+      },
       {
         id: "bujias",
         label: "Bujías",
@@ -125,6 +134,11 @@ export const CHECKLIST: ChecklistSection[] = [
       { id: "elevalunas", label: "Elevalunas" },
       { id: "espejos", label: "Espejos" },
       {
+        id: "camaras_sensores",
+        label: "Cámaras y sensores de aparcamiento",
+        hint: "Que la cámara se vea nítida y todos los sensores avisen al acercarse a un obstáculo.",
+      },
+      {
         id: "extras_homologados",
         label: "Extras homologados",
         hint: "Lunas tintadas, bola de remolque, etc. deben constar en la ficha técnica.",
@@ -138,6 +152,11 @@ export const CHECKLIST: ChecklistSection[] = [
     items: [
       { id: "puertas_ext", label: "Puertas", hint: "Que cuadren bien." },
       { id: "maletero", label: "Maletero", hint: "Que cuadre bien." },
+      {
+        id: "porton_electrico",
+        label: "Portón de maletero eléctrico",
+        hint: "Si es eléctrico: que abra y cierre del todo, sin tirones ni ruidos, desde el botón y desde la llave. Si no lo es, marcar No aplica.",
+      },
       { id: "capo", label: "Capó", hint: "Que cuadre bien." },
       { id: "paragolpes", label: "Paragolpes", hint: "Que cuadren bien." },
       { id: "pilotos_faros_ajuste", label: "Pilotos y faros (ajuste)", hint: "Que cuadren bien." },
