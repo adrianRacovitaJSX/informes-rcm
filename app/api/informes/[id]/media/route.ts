@@ -108,7 +108,9 @@ export async function DELETE(req: NextRequest, { params }: Ctx) {
   if (!mediaId) return NextResponse.json({ error: "Falta mediaId" }, { status: 400 })
 
   const media = await prisma.media.findFirst({ where: { id: mediaId, reportId: id } })
-  if (!media) return NextResponse.json({ error: "No encontrado" }, { status: 404 })
+  // Ya borrado, por ejemplo desde otro dispositivo con la página abierta desde
+  // antes: el resultado es el que se pedía, así que no es un error
+  if (!media) return NextResponse.json({ ok: true, yaBorrado: true })
 
   await prisma.media.delete({ where: { id: mediaId } })
   await deleteFile(media.url)
