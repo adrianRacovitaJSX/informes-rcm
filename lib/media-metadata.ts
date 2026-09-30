@@ -1,6 +1,5 @@
 "use client"
 
-import exifr from "exifr"
 import { sha256 } from "@noble/hashes/sha2"
 import { bytesToHex } from "@noble/hashes/utils"
 
@@ -76,6 +75,9 @@ export async function leerMetadatos(file: File, esVideo: boolean): Promise<Metad
     altoPx = datos.altoPx
   } else {
     try {
+      // Se carga aquí y no arriba: al importarse en el servidor (render de la
+      // página) intenta cargar fs y zlib, falla y llena los logs de avisos
+      const { default: exifr } = await import("exifr")
       const exif = await exifr.parse(file, {
         pick: ["DateTimeOriginal", "CreateDate", "Make", "Model", "ExifImageWidth", "ExifImageHeight"],
       })
