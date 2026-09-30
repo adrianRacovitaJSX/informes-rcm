@@ -13,7 +13,8 @@ Un informe ya generado se puede seguir editando: desde su ficha se entra a cualq
 - Prisma + Postgres (Neon, base de datos propia e independiente).
 - Cloudflare R2 para fotos, vídeos y PDFs (10 GB gratis, sin coste de descarga). En local sin credenciales se guarda en `public/uploads`.
 - PDF generado en servidor con `@react-pdf/renderer` (fotos incrustadas, vídeos como QR + enlace).
-- Subida directa a R2. Los archivos de más de 12 MB, es decir los vídeos, se trocean en partes de 8 MB y se suben tres a la vez, que en 4G va bastante más rápido que una sola conexión.
+- Vídeo grabado dentro de la app (cámara del navegador + `MediaRecorder`) a 1080p y 8 Mbps. Se sube a R2 por partes de 5 MB **mientras se graba**, así que al parar solo queda el último trozo. Con el `<input capture>` del iPhone el vídeo salía en calidad media y iOS lo recomprimía antes de entregarlo, que era lo que más tardaba. Si el navegador no deja grabar, se usa la cámara del sistema.
+- Subida directa a R2. Los archivos de más de 6 MB (vídeos de galería) se trocean en partes de 8 MB y se suben tres a la vez. Cada parte se reintenta hasta cuatro veces y se corta si la conexión se queda 30 s sin avanzar.
 - Instalable como PWA: manifiesto, iconos, service worker, pantalla sin conexión y aviso de instalación.
 
 ## Puesta en marcha
@@ -66,9 +67,9 @@ De cada archivo se guarda lo que permite demostrar después que pertenece a esa 
 
 | Dato | De dónde sale |
 | --- | --- |
-| Huella SHA-256 | Se calcula en el móvil sobre el archivo que se sube |
-| Huella verificada | El servidor descarga los archivos de hasta 12 MB y comprueba la huella él mismo |
-| Fecha de la toma | EXIF de la cámara; si el móvil lo borra, la fecha del archivo |
+| Huella SHA-256 | Se calcula en el móvil sobre el archivo que se sube, leyéndolo por trozos (el vídeo nunca se carga entero en memoria) |
+| Huella verificada | El servidor lee de R2 los archivos de hasta 40 MB y comprueba la huella él mismo |
+| Fecha de la toma | EXIF de la cámara; en vídeos grabados en la app, el momento de empezar a grabar; si no, la fecha del archivo |
 | Dispositivo | Marca y modelo según el EXIF |
 | Fecha de subida | Reloj del servidor |
 | Quién, desde dónde | Usuario, dirección IP y navegador |
