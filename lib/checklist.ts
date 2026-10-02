@@ -167,7 +167,6 @@ export const CHECKLIST: ChecklistSection[] = [
       { id: "modificaciones", label: "Modificaciones estéticas" },
       { id: "pintura", label: "Pintura", hint: "Comprobar los cambios de color de una pieza a otra." },
       { id: "suspension", label: "Suspensión", hint: "Que retenga bien y no haga rebote." },
-      { id: "discos_pastillas", label: "Discos y pastillas" },
       { id: "retrovisores", label: "Retrovisores" },
       {
         id: "faros_golpes",
@@ -178,7 +177,6 @@ export const CHECKLIST: ChecklistSection[] = [
       {
         id: "neumaticos",
         label: "Neumáticos",
-        hint: "Mirar fecha, desgaste, que se marque la uña, que no estén cuarteados y que se gasten por igual.",
         extras: [
           { key: "dot", label: "Fecha fabricación (DOT)", type: "text" },
           { key: "profundidad", label: "Profundidad mínima", type: "number", unit: "mm" },
