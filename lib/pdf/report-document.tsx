@@ -256,6 +256,12 @@ export function ReportDocument({ report, assets }: { report: ReportDTO; assets: 
             <Text style={s.para}>{report.observaciones}</Text>
           </View>
         ) : null}
+        {report.resumen ? (
+          <View wrap={report.resumen.length > 700}>
+            <Text style={s.h2}>Conclusiones del mecánico</Text>
+            <Text style={s.para}>{report.resumen}</Text>
+          </View>
+        ) : null}
 
         {general.length > 0 ? (
           <View>

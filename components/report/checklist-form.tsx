@@ -89,7 +89,7 @@ export function ChecklistForm({ initial, user }: { initial: ReportDTO; user?: Sh
         return
       }
       await flush()
-      router.push(`/informes/${r.id}/resumen`)
+      router.push(`/informes/${r.id}/conclusiones`)
       return
     }
     goTo(idx + 1)

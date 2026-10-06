@@ -3,7 +3,7 @@
 import { useState } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
-import { Car, ClipboardCheck, FileDown, FileText, Loader2, Pencil, RefreshCw, Share2, Trash2 } from "lucide-react"
+import { Car, ClipboardCheck, FileDown, FileText, Loader2, MessageSquareText, Pencil, RefreshCw, Share2, Trash2 } from "lucide-react"
 import { toast } from "sonner"
 import { AppShell, type ShellUser } from "@/components/layout/app-shell"
 import { Button } from "@/components/ui/button"
@@ -157,7 +157,8 @@ export function ReportDetail({ report: r, user }: { report: ReportDTO; user?: Sh
             <div className="grid grid-cols-2 gap-2">
               <Button asChild variant="secondary"><Link href={`/informes/${r.id}/vehiculo`}><Car /> Datos del coche</Link></Button>
               <Button asChild variant="secondary"><Link href={`/informes/${r.id}/revision`}><ClipboardCheck /> Revisión</Link></Button>
-              <Button asChild variant="secondary" className="col-span-2"><Link href={`/informes/${r.id}/resumen`}><FileText /> Resumen e incidencias</Link></Button>
+              <Button asChild variant="secondary"><Link href={`/informes/${r.id}/conclusiones`}><MessageSquareText /> Conclusiones</Link></Button>
+              <Button asChild variant="secondary"><Link href={`/informes/${r.id}/resumen`}><FileText /> Resumen</Link></Button>
             </div>
             <Button onClick={resend} disabled={busy !== null} className="w-full">
               {busy === "resend" ? <Loader2 className="animate-spin" /> : <RefreshCw />} Regenerar PDF

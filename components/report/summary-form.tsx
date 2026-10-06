@@ -138,7 +138,7 @@ export function SummaryForm({ initial, user }: { initial: ReportDTO; user?: Shel
       </div>
 
       <StepFooter>
-        <Button variant="outline" size="lg" onClick={() => router.push(`/informes/${r.id}/revision`)} className="shrink-0" aria-label="Anterior"><ArrowLeft /></Button>
+        <Button variant="outline" size="lg" onClick={() => router.push(`/informes/${r.id}/conclusiones`)} className="shrink-0" aria-label="Anterior"><ArrowLeft /></Button>
         <Button asChild variant="secondary" size="lg" className="shrink-0" title="Vista previa del PDF">
           <a href={`/api/informes/${r.id}/pdf`} target="_blank" rel="noreferrer"><Eye /></a>
         </Button>
