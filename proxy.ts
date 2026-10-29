@@ -33,6 +33,7 @@ export const config = {
     // Públicas, sin sesión:
     // - las imágenes de public/ (el optimizador de imágenes las pide sin la cookie)
     // - la verificación de informes (/verificar y /api/verificar)
-    "/((?!api/auth|api/verificar|verificar|_next/static|_next/image|offline.html|sw.js|manifest.webmanifest|uploads|.*\\.(?:png|jpg|jpeg|svg|webp|ico)$).*)",
+    // - la API para el CRM (/api/v1), que se autentica con X-API-Key en cada ruta
+    "/((?!api/auth|api/verificar|api/v1|verificar|_next/static|_next/image|offline.html|sw.js|manifest.webmanifest|uploads|.*\\.(?:png|jpg|jpeg|svg|webp|ico)$).*)",
   ],
 }
